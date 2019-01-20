@@ -1,0 +1,267 @@
+#安装R包
+```{R}
+if(!requireNamespace("BiocManager"))
+  install.packages("BiocManager")
+
+BiocManager::install("stringi")  # 处理字符串
+BiocManager::install("GEOquery") # 下载GEO数据
+BiocManager::install("limma")    # 差异分析
+BiocManager::install(c("ggfortify", "ggplot2", "pheatmap", "ggstatsplot", "VennDiagram")) # 作图
+BiocManager::install(c("clusterProfiler", "org.Hs.eg.db")) # 注释
+BiocManager::install(c("Glimma", "edgeR","Homo.sapiens"))
+BiocManager::install("R.utils")
+```
+下载成功后打开下载路径**C:\Users\Phoenix_Z\AppData\Local\Temp\RtmpUluUwA\downloaded_packages**，将压缩包移动至**E:\system software\R-3.5.2\library**并解压
+
+
+#运行R包
+```{R}
+url <- 'http://bioconductor.org/packages/2.13/bioc/bin/windows/contrib/3.0/limma_3.18.13.zip'#其他下载途径处理limma包安装问题
+library("limma")
+library("Glimma")
+library("edgeR")
+library("Homo.sapiens")
+library("stringi")
+```
+
+#读入数据
+```{R}
+url <- "https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE109708&format=file"
+utils::download.file(url, destfile="GSE109708_RAW.tar", mode="wb") 
+utils::untar("GSE109708_RAW.tar", exdir = ".")
+```
+
+
+#将压缩包转换为文件
+```{R}
+files <- c("GSM2948745_01_Balk-S1_sn.count.txt", "GSM2948746_02_Balk-S2_sn.count.txt", "GSM2948747_09_Balk_sn.count.txt", "GSM2948748_10_Balk_sn.count.txt", "GSM2948749_11_Balk_sn.count.txt", "GSM2948750_12_Balk_sn.count.txt", "GSM2948751_13_Balk_sn.count.txt", "GSM2948752_14_Balk_sn.count.txt")
+for(i in paste(files, ".gz", sep=""))
+  R.utils::gunzip(i, overwrite=TRUE)
+```
+
+#数据处理
+##简单地读取数据
+```{R}
+files <- c("GSM2948745_01_Balk-S1_sn.count.txt", "GSM2948746_02_Balk-S2_sn.count.txt", "GSM2948747_09_Balk_sn.count.txt", "GSM2948748_10_Balk_sn.count.txt", "GSM2948749_11_Balk_sn.count.txt", "GSM2948750_12_Balk_sn.count.txt", "GSM2948751_13_Balk_sn.count.txt", "GSM2948752_14_Balk_sn.count.txt")
+read.delim(files[1], nrow=5)
+```
+
+
+
+
+##使用edgeR包的readDGE函数一步将八个文件合并，得到的DGEList对象中包含一个计数矩阵
+```{R}
+x <- readDGE(files, columns=c(1,2))
+class(x)
+dim(x)
+```
+
+
+
+##组织样品信息
+###先简化GEO的ID名称，把文件名中的GSM*去掉共12位
+```{R}
+samplenames <- substring(colnames(x), 12, nchar(colnames(x)) )
+samplenames
+```
+
+```{R}
+group <- as.factor(c("Pre_Bx", "Post_Bx", "Post_Bx", "Terminal_Bx", "Pre_Bx", "Terminal_Bx", "Terminal_Bx", "Terminal_Bx"))
+x$samples$group <- group
+lane <- as.factor(c("C3-1","C3-1","C1-3","C2-17","C1-4","C3_1","C1_3","C1_4"))
+x$samples$lane <- lane
+x$samples
+```
+
+
+
+```{R}
+library('Homo.sapiens')
+geneid <- row.names(x)
+genes <- select(Homo.sapiens, keytype='ENSEMBL', keys=geneid, 
+                columns=c('ALIAS', "SYMBOL", 'TXCHROM', 'TXSTART', 'TXEND'))
+
+head(genes)
+```
+
+```{R}
+genes <- genes[!duplicated(genes$ENSEMBL),]
+x$genes <- genes
+x
+```
+
+#数据预处理
+```{R}
+cpm <- cpm(x)
+lcpm <- cpm(x, log=TRUE)
+summary(lcpm)
+```
+
+
+##查看不表达基因
+```{R}
+table(rowSums(x$counts==0)==8)
+```
+
+
+##对低表达基因进行过滤
+```{R}
+keep.exprs <- rowSums(cpm>1)>=4
+x <- x[keep.exprs,, keep.lib.sizes=FALSE]
+dim(x)
+```
+
+
+
+##绘图观察过滤效果
+```{R}
+library(RColorBrewer)
+nsamples <- ncol(x)
+col <- brewer.pal(nsamples, "Paired")
+par(mfrow=c(1,2))
+plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.60), las=2,
+     main="", xlab="")
+title(main="A. Raw data", xlab="Log-cpm")
+abline(v=0, lty=3)
+for (i in 2:nsamples){
+  den <- density(lcpm[,i])
+  lines(den$x, den$y, col=col[i], lwd=2)
+}
+legend("topright", samplenames, text.col=col, bty="n")
+```
+
+
+```{r}
+lcpm <- cpm(x, log=TRUE)
+plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2,
+     main="", xlab="")
+title(main="B. Filtered data", xlab="Log-cpm")
+abline(v=0, lty=3)
+for (i in 2:nsamples){
+  den <- density(lcpm[,i])
+  lines(den$x, den$y, col=col[i], lwd=2)
+}
+legend("topright", samplenames, text.col=col, bty="n")
+```
+
+
+#归一化
+```{R}
+x <- calcNormFactors(x, method = "TMM")
+x$samples$norm.factors
+```
+
+```{R}
+x2 <- x
+x2$samples$norm.factors <- 1
+x2$counts[,1] <- ceiling(x2$counts[,1]*0.05)
+x2$counts[,2] <- x2$counts[,2]*5
+```
+
+
+
+
+```{R}
+par(mfrow=c(1,2))
+lcpm <- cpm(x2, log=TRUE)
+boxplot(lcpm, las=2, col=col, main="")
+title(main="A. Example: Unnormalised data",ylab="Log-cpm")
+x2 <- calcNormFactors(x2)  
+x2$samples$norm.factors
+```
+
+##归一化绘图
+```{R}
+lcpm <- cpm(x2, log=TRUE)
+boxplot(lcpm, las=2, col=col, main="")
+title(main="B. Example: Normalised data",ylab="Log-cpm")
+```
+
+
+
+#对样本无监督聚类
+```{R}
+lcpm <- cpm(x, log=TRUE)
+par(mfrow=c(1,2))
+col.group <- group
+levels(col.group) <-  brewer.pal(nlevels(col.group), "Set1")
+col.group <- as.character(col.group)
+col.lane <- lane
+levels(col.lane) <-  brewer.pal(nlevels(col.lane), "Set2")
+col.lane <- as.character(col.lane)
+plotMDS(lcpm, labels=group, col=col.group)
+title(main="A. Sample groups")
+plotMDS(lcpm, labels=lane, col=col.lane, dim=c(3,4))
+title(main="B. Sequencing lanes")
+```
+
+
+```{r}
+BiocManager::install("airway")
+library("airway")
+```
+
+
+
+#差异表达分析
+```{r}
+design <- model.matrix(~0+group)
+colnames(design) <- gsub("group", "", colnames(design))
+design
+
+
+```
+
+
+```{R}
+contr.matrix <- makeContrasts(
+   PrevsPost = Pre_Bx - Post_Bx, 
+   PrevsTerminal = Pre_Bx - Terminal_Bx,
+   levels = colnames(design))
+contr.matrix
+```
+
+
+
+```{r}
+par(mfrow=c(1,2))
+v <- voom(x, design,plot = TRUE)
+v
+vfit <- lmFit(v, design)
+vfit <- contrasts.fit(vfit, contrasts=contr.matrix)
+efit <- eBayes(vfit)
+plotSA(efit, main="Final model: Mean-variance trend")
+```
+
+```{r}
+summary(decideTests(efit))
+```
+
+
+```{r}
+dt <- decideTests(efit)
+write.fit(efit, dt, file="results.txt")
+```
+
+```{r}
+PostvsPre  <- topTreat(efit, coef=1, n=Inf)
+PrevsTerminal <- topTreat(efit, coef=2, n=Inf)
+head(PostvsPre)
+head(PrevsTerminal)
+```
+
+
+```{r}
+plotMD(efit, column=1, status=dt[,1], main=colnames(efit)[1], 
+       xlim=c(-8,13))
+glMDPlot(efit, coef=1, status=dt, main=colnames(efit)[1],
+         side.main="ENTEMBL", counts=lcpm, groups=group, launch=FALSE)
+```
+
+```{r}
+plotMD(efit, column=2, status=dt[,2], main=colnames(efit)[2], 
+       xlim=c(-8,13))
+glMDPlot(efit, coef=2, status=dt, main=colnames(efit)[2],
+         side.main="ENTEMBL", counts=lcpm, groups=group, launch=FALSE)
+```
+
